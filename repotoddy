@@ -1,0 +1,298 @@
+#!/usr/bin/env python
+
+"""
+Created by Wesley Whetstone 03/10/2017
+
+Copyright 2017 Square Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
+
+try:
+    from reposadolib import reposadocommon
+except ImportError:
+    print('Failed to import reposado! Did you symlink it?')
+    print ('Please Try. \n `ln -s /path/to/reposado/code/* .`')
+    exit()
+
+
+import imp
+import sys
+import os
+import plistlib
+import subprocess
+import optparse
+from repotoddylib import repotoddycommon
+
+REPO_SYNC = os.path.join(reposadocommon.get_main_dir(), 'repo_sync')
+REPOUTIL = os.path.join(reposadocommon.get_main_dir(), 'repoutil')
+repoutil = imp.load_source('repoutil', REPOUTIL)
+
+
+def diff_branches(branch1, branch2):
+    '''runs a `repoutil --diff` against the provided branches'''
+    cmd = [REPOUTIL, '--diff', branch1, branch2]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    out, err = proc.communicate()
+    if 'Unique' in out:
+        return [True, out]
+    else:
+        return False
+
+
+def copy_branches(branch1, branch2):
+    '''Copies _branch1_ to _branch2_ using `repoutil` from reposado'''
+    print('Copying {0} to {1}'.format(branch1, branch2))
+    cmd = [REPOUTIL, '--copy-branch', branch1, branch2, '--force']
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    out, err = proc.communicate()
+    print(out)
+
+
+def move_changes(branch_list):
+    '''Moves any changes in the  provided branch_list from the end to the
+    beginning, so a branch list ['a', 'b', 'c', 'd']
+    would go "c -> d", "b - > c", "a -> b".'''
+    length = len(branch_list)
+    compare_number = 2
+    while True:
+        if compare_number > length:
+            break
+        items_to_compare = branch_list[-compare_number:]
+        print('Comparing {0}, to {1}...'.format(
+            items_to_compare[0], items_to_compare[1]))
+        diff = diff_branches(items_to_compare[0], items_to_compare[1])
+        if diff:
+            print('Found a difference between {0} and {1}...'.format(
+                items_to_compare[0], items_to_compare[1]))
+            print('Moving the following objects {0}...'.format(diff[1]))
+            copy_branches(items_to_compare[0], items_to_compare[1])
+        else:
+            print('Found no changes...')
+        compare_number += 1
+
+
+def run_repo_sync():
+    ''' Does a reposado repo_sync to pull latest updates.
+    Capturing the difference from before and after the repo_sync.
+    '''
+    # capture current apple updates
+    oldproducts = reposadocommon.getProductInfo()
+    print('Running reposado "repo_sync"...')
+    # run repo_sync to get the latest
+    subprocess.call([REPO_SYNC])
+    # capture the latest updates
+    newproducts = reposadocommon.getProductInfo()
+    # find out what new updates were just pulled down.
+    diff = set(newproducts.keys()) - set(oldproducts.keys())
+    # return that set list
+    return diff
+
+
+def import_latest_munki_metadata(force, all=False):
+    '''This option will pull down the latest updates and check for any
+    updates that require a restart, if they do then import the new metadata
+    into munki '''
+
+    munki_dir = repotoddycommon.pref('MunkiPkginfoPath')
+    if not munki_dir:
+        print('MunkiPkginfoPath is not configured in repotoddy_prefs.plist')
+        print('\nTry... `repotoddy --configure`')
+        exit(1)
+    if all:
+        all_products = reposadocommon.getProductInfo()
+        items = list(all_products.keys())
+    else:
+        items = run_repo_sync()
+    items_to_add = get_products_with_restart(items)
+
+    if len(items_to_add) < 1:
+        print('Did not find any updates to add to munki...')
+    generate_pkginfo(munki_dir, items_to_add, force)
+
+    return items
+
+
+def generate_pkginfo(munki_dir, items, force):
+    ''' Will generate a pkginfo for each item in the provided list 'items' and
+    place them at 'munki_dir'.
+    If 'force' is True a force install time based on the set preferences will
+    be added to the pkginfo'''
+    all_products = reposadocommon.getProductInfo()
+    for item in items:
+        pkginfo_template = repotoddycommon.get_munki_apple_update_template()
+        print('Creating Apple Update Metadata for "{0}"...'.format(
+            all_products[item]['title']))
+        catalog = repotoddycommon.pref('MunkiCatalog')
+        pkginfo_template['name'] = item
+        pkginfo_template['catalogs'] = [catalog]
+        pkginfo_template['version'] = all_products[item]['version']
+        if force:
+            force_time = repotoddycommon.get_force_install()
+            pkginfo_template['force_install_after_date'] = force_time
+        pkginfo_template['display_name'] = all_products[item]['title']
+        dis_name = pkginfo_template['display_name']
+        ver = pkginfo_template['version']
+        item_name = '{0}-{1}-{2}.plist'.format(item, dis_name, ver).replace(
+            ' ', '_')
+        try:
+            plistlib.writePlist(pkginfo_template, os.path.join(
+                munki_dir, item_name))
+        except IOError:
+            print('ERROR: Failed to write file {0}!'.format(item_name))
+            if not os.path.exists(munki_dir):
+                print('ERROR: MunkiPkginfoPath {0} does not exist.'.format(
+                    munki_dir))
+            else:
+                print('\nIs the base directory {0} writable?'.format(
+                    munki_dir))
+
+
+def get_products_with_restart(item_list):
+    '''Checks the provided 'item_list' of reposado product id's to see if
+    they require a restart after being installed'''
+    all_products = reposadocommon.getProductInfo()
+    restart_items = []
+    for product in item_list:
+        pkgrefs = all_products[product]['pkg_refs'].keys()
+        for pkg in pkgrefs:
+            if 'RestartAction' in all_products[product]['pkg_refs'][pkg]:
+                restart_items.append(product)
+                print('new item "{0}" will be imported into munki.'.format(
+                    all_products[product]['title']))
+    return restart_items
+
+
+def run(sync=False, munki=False, force=False):
+    '''This the primary run function for repotoddy, that will process updates
+    from branch to branch, sync, munki, and force can all be changed to True,
+    for sync=True to run repo_sync at the end, munki=True for importing munki
+    pkginfo data on new items, and force=True to add a force install date to
+    the pkginfo items.'''
+    branch_list = repotoddycommon.pref('ReposadoBranchOrderList')
+    skip_products_list = repotoddycommon.pref('SkipProducts')
+    diff = []
+    if len(branch_list) < 2:
+        print('Less than 2 branches configured, \nTry `repotoddy --configure`')
+        exit()
+    move_changes(branch_list)
+    if munki:
+        diff = import_latest_munki_metadata(force=force)
+    if sync:
+        if not munki:
+            diff = run_repo_sync()
+    if diff:
+        print('Moving latest non-deprecated items'
+              ' to the "{0}" branch...'.format(branch_list[0]))
+        cmd = [REPOUTIL, '--add-product', 'non-deprecated', branch_list[0]]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        out, err = proc.communicate()
+        print(out)
+    else:
+        print('No new updates from repo_sync or "--no-sync"...')
+    if skip_products_list:
+        skip_products(skip_products_list, branch_list)
+    exit()
+
+
+def skip_products(items, branches):
+    '''loops through all branches and removes the provided items, useful
+    for using repotoddy and keeping some items out.. Takes a list of items
+    and a list of branches.'''
+    print('\nChecking if we have any Products to skip/remove...')
+    if len(items) <= 0:
+        print('\nNo Items to Remove...')
+        exit(0)
+    print('\nChecking status on item(s): {0}...'.format(
+        items))
+    catalog_branches = reposadocommon.getCatalogBranches()
+    items_need_removal = []
+    target_branches = []
+    for item in items:
+        for branch in branches:
+            if item in catalog_branches[branch]:
+                if item not in items_need_removal:
+                    print('Found item {0} in branch {1},'
+                          ' marking for removal...'.format(
+                                                           item, branch))
+                    items_need_removal.append(item)
+                if branch not in target_branches:
+                    target_branches.append(branch)
+
+    if not items_need_removal:
+        print('\nDid not find any items that need removal...')
+        return
+    for branch in target_branches:
+        items_need_removal.append(branch)
+        repoutil.remove_product_from_branch(items_need_removal)
+        items_need_removal.pop()
+
+
+def main():
+    ''' ready, set, main '''
+
+    p = optparse.OptionParser()
+    p.set_usage('''Usage: %prog [options]''')
+
+    p.add_option('--run', '-r', action='store_true',
+                 help='Moves Apple Software Updates between configured '
+                 'branches.\n')
+
+    p.add_option('--configure', '-c', action='store_true',
+                 help='Configure repotoddy for use.')
+
+    p.add_option('--munki', '-m', action='store_true', default=False,
+                 help='Downloads latest Apple Updates, and imports new items '
+                 'that require a restart into munki. Works with "--run" or'
+                 'solo.')
+
+    p.add_option('--all-munki', '-a', action='store_true',
+                 help='Imports all apple update items that '
+                 'require a restart into munki. Does not check for new'
+                 ' changes, only uses existing reposado information.')
+
+    p.add_option('--no-sync', '-n', action='store_false', default=True,
+                 help='Use with "--run" to keep repotoddy from syncing latest '
+                 'update catalogs. Will be ignored with "--munki".')
+
+    p.add_option('--set-force', '-f', action='store_true', default=False,
+                 help='Use with "--run", "--munki", "--munki-all" to have'
+                 ' a force_install_after_date set in the munki pkginfo.')
+
+    p.add_option('--remove', action='store_true', default=False,
+                 help='Use by itself to perform just the item removals '
+                 'defined in repotoddy_prefs.plist')
+
+    options, arguments = p.parse_args()
+
+    if options.configure:
+        repotoddycommon.configure_prefs()
+    sync_changes = options.no_sync
+    munki = options.munki
+    force_install = options.set_force
+    all_updates = options.all_munki
+    if options.run:
+        run(sync=sync_changes, munki=munki, force=force_install)
+    if options.munki or all_updates:
+        import_latest_munki_metadata(all=all_updates, force=force_install)
+    if options.remove:
+        branch_list = repotoddycommon.pref('ReposadoBranchOrderList')
+        skip_products_list = repotoddycommon.pref('SkipProducts')
+        skip_products(skip_products_list, branch_list)
+
+
+if __name__ == '__main__':
+    main()
