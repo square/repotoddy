@@ -120,6 +120,12 @@ def diff_branches(branch_list):
 
 def arrange_branches(branch_list):
     '''user interaction to arrange branches in preferred order'''
+
+    if not branch_list:
+      print('WARNING: Please setup reposado with at least two branches '
+            'to use repotoddy...')
+      sys.exit(1)
+
     arranged_branches = []
     branch_num = 0
     while len(branch_list) > 0:
