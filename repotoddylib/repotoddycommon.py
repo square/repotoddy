@@ -32,6 +32,8 @@ import os
 import plistlib
 import datetime
 
+PREF_PATH = None
+
 
 def configure_prefs():
     """Configures prefs for use"""
@@ -64,7 +66,7 @@ def configure_prefs():
         except AttributeError:
             pass
         _prefs[key] = newvalue or pref(key) or ''
-    toddy_plist = os.path.join(get_main_dir(), 'repotoddy_prefs.plist')
+    toddy_plist = pref_file()
     try:
         old_prefs = plistlib.readPlist(toddy_plist)
     except IOError as e:
@@ -90,9 +92,17 @@ def get_main_dir():
     return os.path.dirname(sys.argv[0])
 
 
+def pref_file():
+  ''' Returns preference file '''
+  if PREF_PATH:
+    return os.path.abspath(PREF_PATH)
+
+  return os.path.join(get_main_dir(), 'repotoddy_prefs.plist')
+
+
 def pref(key):
     '''Returns the value of preference key'''
-    toddy_plist = os.path.join(get_main_dir(), 'repotoddy_prefs.plist')
+    toddy_plist = pref_file()
     try:
         prefs = plistlib.readPlist(toddy_plist)
     except IOError:

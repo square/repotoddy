@@ -253,7 +253,8 @@ def main():
 
     p.add_option('--configure', '-c', action='store_true',
                  help='Configure repotoddy for use.')
-
+    p.add_option('--pref_file', '-p', dest='pref_file',
+                 help='Preference file to use.')
     p.add_option('--munki', '-m', action='store_true', default=False,
                  help='Downloads latest Apple Updates, and imports new items '
                  'that require a restart into munki. Works with "--run" or'
@@ -278,6 +279,13 @@ def main():
 
     options, arguments = p.parse_args()
 
+
+    if options.pref_file:
+      if options.configure or os.path.exists(options.pref_file):
+        repotoddycommon.PREF_PATH = options.pref_file
+      else:
+        print('Preference file does not exists')
+        exit()
     if options.configure:
         repotoddycommon.configure_prefs()
     sync_changes = options.no_sync
