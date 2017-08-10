@@ -150,6 +150,7 @@ def get_munki_apple_update_template():
     pkginfo_template = {
         'catalogs': [''],
         'display_name': '',
+        'description': '',
         'force_install_after_date': '',
         'installer_type': 'apple_update_metadata',
         'name': '',

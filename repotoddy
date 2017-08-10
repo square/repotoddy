@@ -142,6 +142,8 @@ def generate_pkginfo(munki_dir, items, force):
         if force:
             force_time = repotoddycommon.get_force_install()
             pkginfo_template['force_install_after_date'] = force_time
+            force_description = repotoddycommon.pref('MunkiForceDescription')
+            pkginfo_template['description'] = force_description
         pkginfo_template['display_name'] = all_products[item]['title']
         dis_name = pkginfo_template['display_name']
         ver = pkginfo_template['version']
